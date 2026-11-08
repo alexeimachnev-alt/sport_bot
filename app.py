@@ -16,18 +16,18 @@ bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 
 server = Flask(__name__)
 
-# Иконки и флаги через chr(), чтобы GitHub не ругался на скрытые знаки
+# Иконки и флаги через chr(), чтобы GitHub не ругался на hidden characters
 FLAG_RU = chr(0x1F1F7) + chr(0x1F1FA)
 FLAG_EN = chr(0x1F3F4) + chr(0xE0067) + chr(0xE0062) + chr(0xE0065) + chr(0xE006E) + chr(0xE0067) + chr(0xE007F)
 FLAG_ES = chr(0x1F1EA) + chr(0x1F1F8)
 FLAG_US = chr(0x1F1FA) + chr(0x1F1F8)
 ICON_BALL = chr(0x26BD)
 ICON_PUCK = chr(0x1F3D2)
-ICON_F1   = chr(0x1F3CE)  # 🏎 Болид Формулы-1
+ICON_F1   = chr(0x1F3CE)
 ICON_LIVE = chr(0x1F534)
 ICON_TIME = chr(0x23F1)
 ICON_CAL  = chr(0x1F4C5)
-ICON_FLAG = chr(0x1F3C1)  # 🏁 Клетчатый флаг
+ICON_FLAG = chr(0x1F3C1)
 
 SEP_BLOCK = chr(126)  # ~
 SEP_FIELD = chr(172)  # ¬
@@ -53,7 +53,8 @@ COUNTRY_TRANSLATE = {
     "italy": "Италия",
     "france": "Франция",
     "usa": "США",
-    "world": "Мир"
+    "world": "Мир",
+    "brazil": "Бразилия"
 }
 
 LEAGUE_TRANSLATE = {
@@ -110,7 +111,7 @@ def self_ping_worker():
 
 def parse_flashscore_feed(sport_id=1, day_offset=0):
     """
-    sport_id: 1 - Футбол, 4 - Хоккей, 25 - Формула-1 / Автоспорт
+    sport_id: 1 - Футбол, 4 - Хоккей, 15 - Формула-1 / Автоспорт
     day_offset: -1 (вчера), 0 (сегодня), 1 (завтра), 2 (послезавтра)
     """
     feed_name = f"f_{sport_id}_{day_offset}_3_ru_1"
@@ -188,13 +189,12 @@ def get_sport_matches(target_league: str, day_mode: str) -> str:
     target_league:
       Футбол: 'all_football', 'rpl', 'epl', 'laliga'
       Хоккей: 'all_hockey', 'khl', 'nhl'
-      Автоспорт: 'f1'
-    day_mode: 'yesterday' (-1), 'today' (0), 'tomorrow' (1), 'future' (1 + 2)
+      Формула-1: 'f1'
     """
     if target_league in ["all_hockey", "khl", "nhl"]:
         sport_id = 4
     elif target_league == "f1":
-        sport_id = 25
+        sport_id = 15
     else:
         sport_id = 1
 
@@ -203,6 +203,9 @@ def get_sport_matches(target_league: str, day_mode: str) -> str:
         matches = parse_flashscore_feed(sport_id=sport_id, day_offset=-1)
     elif day_mode == "today":
         matches = parse_flashscore_feed(sport_id=sport_id, day_offset=0)
+        # Если сегодня фид F1 пуст из-за сдвига UTC суток, проверяем соседний диапазон
+        if not matches and target_league == "f1":
+            matches = parse_flashscore_feed(sport_id=sport_id, day_offset=-1) + parse_flashscore_feed(sport_id=sport_id, day_offset=1)
     elif day_mode == "tomorrow":
         matches = parse_flashscore_feed(sport_id=sport_id, day_offset=1)
     elif day_mode == "future":
@@ -238,27 +241,27 @@ def get_sport_matches(target_league: str, day_mode: str) -> str:
             if "нхл" in league_low or "nhl" in league_low:
                 is_target = True
         elif target_league == "f1":
-            # Фильтр Формулы-1
-            if any(k in league_low for k in ["formula 1", "формула-1", "f1", "гран-при", "grand prix"]) or \
-               any(k in country_low for k in ["formula 1", "формула-1"]):
+            f1_keywords = ["f1", "формул", "formula", "гран-при", "grand prix", "автоспорт", "сан-паулу", "интерлагос", "бразил"]
+            if any(k in league_low for k in f1_keywords) or any(k in country_low for k in f1_keywords):
                 is_target = True
 
         if not is_target:
             continue
 
-        # Специфический вывод для Формулы-1 (заезд / гонка / квалификация)
+        # Отображение для Формулы-1
         if target_league == "f1":
-            session_name = m['home'] or m['league']
+            event_name = m['home'] or m['league']
+            status_text = m['status_text']
             if m['status_code'] == "2":
-                lines.append(f"{ICON_LIVE} <b>{m['league']}</b>\n   └ {session_name} ({ICON_TIME} <i>{m['status_text']}</i>)")
+                lines.append(f"{ICON_LIVE} <b>{m['country']}: {m['league']}</b>\n   └ 🏎 {event_name} ({ICON_TIME} <i>{status_text}</i>)")
             elif m['status_code'] == "3":
-                winner_info = f" — Победитель: {m['away']}" if m['away'] else ""
-                lines.append(f"{ICON_FLAG} <b>{m['league']}</b>\n   └ {session_name}{winner_info} (<i>Завершен</i>)")
+                winner = f" | Победитель: {m['away']}" if m['away'] else ""
+                lines.append(f"{ICON_FLAG} <b>{m['country']}: {m['league']}</b>\n   └ {event_name}{winner} (<i>Завершен</i>)")
             else:
-                lines.append(f"⏳ <b>{m['league']}</b>\n   └ {session_name} | {ICON_TIME} <i>{m['time_str']}</i>")
+                lines.append(f"⏳ <b>{m['country']}: {m['league']}</b>\n   └ {event_name} | {ICON_TIME} <i>{m['time_str']}</i>")
             continue
 
-        # Вывод футбола и хоккея
+        # Отображение для Футбола и Хоккея
         has_score = (m['score_home'] != "" and m['score_away'] != "")
         score = f"{m['score_home']}:{m['score_away']}" if has_score else "vs"
 
@@ -293,7 +296,7 @@ def get_sport_matches(target_league: str, day_mode: str) -> str:
         "yesterday": "Результаты за ВЧЕРА",
         "today": "СЕГОДНЯ / LIVE",
         "tomorrow": "Расписание на ЗАВТРА",
-        "future": "БЛИЖАЙШИЕ ЗАЕЗДЫ / МАТЧИ С ДАТОЙ И ВРЕМЕНЕМ"
+        "future": "БЛИЖАЙШИЕ СОБЫТИЯ С ДАТОЙ И ВРЕМЕНЕМ"
     }
 
     head = f"{league_headers.get(target_league, 'События')} — <i>{day_headers.get(day_mode, '')}</i>:\n\n"
@@ -304,16 +307,11 @@ def get_sport_matches(target_league: str, day_mode: str) -> str:
 
 def make_tournaments_keyboard():
     kb = types.InlineKeyboardMarkup(row_width=2)
-    # Формула-1 на отдельной заметной кнопке
     btn_f1 = types.InlineKeyboardButton(f"{ICON_F1} Формула-1", callback_data="sel_f1")
-
-    # Футбол
     btn_rpl = types.InlineKeyboardButton(f"{FLAG_RU} РПЛ", callback_data="sel_rpl")
     btn_epl = types.InlineKeyboardButton(f"{FLAG_EN} АПЛ", callback_data="sel_epl")
     btn_laliga = types.InlineKeyboardButton(f"{FLAG_ES} Ла Лига", callback_data="sel_laliga")
     btn_f_all = types.InlineKeyboardButton(f"{ICON_BALL} Все матчи (Футбол)", callback_data="sel_all_football")
-
-    # Хоккей
     btn_khl = types.InlineKeyboardButton(f"{FLAG_RU} КХЛ", callback_data="sel_khl")
     btn_nhl = types.InlineKeyboardButton(f"{FLAG_US} НХЛ", callback_data="sel_nhl")
     btn_h_all = types.InlineKeyboardButton(f"{ICON_PUCK} Все матчи (Хоккей)", callback_data="sel_all_hockey")
