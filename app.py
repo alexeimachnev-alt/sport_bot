@@ -4,7 +4,7 @@ import logging
 import threading
 from datetime import datetime, timezone, timedelta
 import requests
-from flask import Flask, render_template
+from flask import Flask, render_template, send_from_directory
 import telebot
 from telebot import types
 
@@ -16,7 +16,7 @@ bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 
 server = Flask(__name__)
 
-# Иконки и флаги через chr(), чтобы GitHub не выдавал предупреждений
+# Иконки и флаги через chr(), чтобы GitHub не ругался на hidden characters
 FLAG_RU = chr(0x1F1F7) + chr(0x1F1FA)
 FLAG_EN = chr(0x1F3F4) + chr(0xE0067) + chr(0xE0062) + chr(0xE0065) + chr(0xE006E) + chr(0xE0067) + chr(0xE007F)
 FLAG_ES = chr(0x1F1EA) + chr(0x1F1F8)
@@ -24,7 +24,7 @@ FLAG_US = chr(0x1F1FA) + chr(0x1F1F8)
 ICON_BALL = chr(0x26BD)
 ICON_PUCK = chr(0x1F3D2)
 ICON_F1   = chr(0x1F3CE)
-ICON_GAME = chr(0x1F3AE)  # 🎮
+ICON_GAME = chr(0x1F3AE)
 ICON_LIVE = chr(0x1F534)
 ICON_TIME = chr(0x23F1)
 ICON_CAL  = chr(0x1F4C5)
@@ -54,7 +54,8 @@ COUNTRY_TRANSLATE = {
     "italy": "Италия",
     "france": "Франция",
     "usa": "США",
-    "world": "Мир"
+    "world": "Мир",
+    "brazil": "Бразилия"
 }
 
 LEAGUE_TRANSLATE = {
@@ -65,7 +66,8 @@ LEAGUE_TRANSLATE = {
     "extraleague": "Экстралига",
     "premier league": "Премьер-лига",
     "laliga": "Ла Лига",
-    "champions league": "Лига Чемпионов"
+    "champions league": "Лига Чемпионов",
+    "formula 1": "Формула-1"
 }
 
 MSK_TZ = timezone(timedelta(hours=3))
@@ -87,7 +89,7 @@ def format_timestamp_msk(ts_str: str) -> str:
         return "Скоро"
 
 
-# --- ВЕБ-СЕРВЕР FLASK ДЛЯ RENDER И ИГРОВОГО WEB APP ---
+# --- ВЕБ-СЕРВЕР FLASK ДЛЯ RENDER, ЭМУЛЯТОРА И ЛОКАЛЬНЫХ РОМОВ ---
 
 @server.route('/')
 def home():
@@ -99,8 +101,12 @@ def health():
 
 @server.route('/retro')
 def retro_emulator():
-    # Отдает страницу с эмулятором EmulatorJS
     return render_template('retro.html')
+
+@server.route('/roms/<path:filename>')
+def serve_rom(filename):
+    roms_dir = os.path.join(server.root_path, 'roms')
+    return send_from_directory(roms_dir, filename)
 
 def self_ping_worker():
     time.sleep(30)
@@ -115,7 +121,7 @@ def self_ping_worker():
         time.sleep(480)
 
 
-# --- ПАРСЕР FLASHSCORE (ФУТБОЛ И ХОККЕЙ) ---
+# --- ПАРСИНГ ФУТБОЛА И ХОККЕЯ (FLASHSCORE FEED) ---
 
 def parse_flashscore_feed(sport_id=1, day_offset=0):
     feed_name = f"f_{sport_id}_{day_offset}_3_ru_1"
@@ -188,7 +194,7 @@ def parse_flashscore_feed(sport_id=1, day_offset=0):
         return []
 
 
-# --- ФОРМУЛА-1 ---
+# --- МОДУЛЬ ФОРМУЛЫ-1 (БЕЗОТКАЗНЫЙ API JOLPICA) ---
 
 def get_f1_events(day_mode: str) -> str:
     try:
@@ -346,10 +352,8 @@ def get_sport_matches(target_league: str, day_mode: str) -> str:
 
 def make_tournaments_keyboard():
     kb = types.InlineKeyboardMarkup(row_width=2)
-    # Кнопка перехода в Ретро-Игры
     btn_games = types.InlineKeyboardButton(f"{ICON_GAME} 🎮 Ретро-Игры (Денди / Сега)", callback_data="open_retro_arcade")
-    
-    # Спорт
+
     btn_f1 = types.InlineKeyboardButton(f"{ICON_F1} Формула-1", callback_data="sel_f1")
     btn_rpl = types.InlineKeyboardButton(f"{FLAG_RU} РПЛ", callback_data="sel_rpl")
     btn_khl = types.InlineKeyboardButton(f"{FLAG_RU} КХЛ", callback_data="sel_khl")
@@ -383,20 +387,18 @@ def make_day_keyboard(league_key: str):
 
 
 def make_games_keyboard():
-    """Клавиатура с запуском игр прямо в Web App"""
     kb = types.InlineKeyboardMarkup(row_width=1)
     base_url = os.getenv("RENDER_EXTERNAL_URL", "https://sport-bot.onrender.com").rstrip('/')
 
-    # Прямые ссылки на стабильные открытые ROM-зеркала
-    url_goal3 = f"{base_url}/retro?sys=nes&rom=https://ia800504.us.archive.org/34/items/nes-rom-set/Kunio%20Kun%20no%20Nekketsu%20Soccer%20League%20%28J%29%20%5BT%2BRus%5D.nes"
-    url_tanks = f"{base_url}/retro?sys=nes&rom=https://ia800504.us.archive.org/34/items/nes-rom-set/Battle%20City%20%28J%29.nes"
-    url_tmnt = f"{base_url}/retro?sys=sega&rom=https://ia801905.us.archive.org/16/items/sega-genesis-romset-ultra-complete/Teenage%20Mutant%20Ninja%20Turtles%20-%20The%20Hyperstone%20Heist%20%28USA%29.zip"
-    url_umk3 = f"{base_url}/retro?sys=sega&rom=https://ia801905.us.archive.org/16/items/sega-genesis-romset-ultra-complete/Ultimate%20Mortal%20Kombat%203%20%28USA%29.zip"
+    # Ромы раздаются прямо из локальной папки roms/ твоего сервера
+    url_goal3 = f"{base_url}/retro?sys=nes&rom={base_url}/roms/goal3.nes"
+    url_tanks = f"{base_url}/retro?sys=nes&rom={base_url}/roms/battle_city.nes"
+    url_tmnt  = f"{base_url}/retro?sys=sega&rom={base_url}/roms/tmnt.zip"
+    url_umk3  = f"{base_url}/retro?sys=sega&rom={base_url}/roms/umk3.zip"
 
-    # Кнопки с WebAppInfo
-    btn1 = types.InlineKeyboardButton("⚽️ Футбол Денди (Goal 3 / Nekketsu Soccer)", web_app=types.WebAppInfo(url=url_goal3))
+    btn1 = types.InlineKeyboardButton("⚽️ Футбол Денди (Goal 3)", web_app=types.WebAppInfo(url=url_goal3))
     btn2 = types.InlineKeyboardButton("🚜 Танчики Денди (Battle City)", web_app=types.WebAppInfo(url=url_tanks))
-    btn3 = types.InlineKeyboardButton("🥷 Черепашки-Ниндзя (Sega Hyperstone Heist)", web_app=types.WebAppInfo(url=url_tmnt))
+    btn3 = types.InlineKeyboardButton("🥷 Черепашки-Ниндзя (Sega)", web_app=types.WebAppInfo(url=url_tmnt))
     btn4 = types.InlineKeyboardButton("🥋 Mortal Kombat 3 Ultimate (Sega)", web_app=types.WebAppInfo(url=url_umk3))
     btn_back = types.InlineKeyboardButton("⬅️ Назад в Спорт-Центр", callback_data="go_main_menu")
 
