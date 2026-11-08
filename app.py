@@ -53,8 +53,7 @@ COUNTRY_TRANSLATE = {
     "italy": "Италия",
     "france": "Франция",
     "usa": "США",
-    "world": "Мир",
-    "brazil": "Бразилия"
+    "world": "Мир"
 }
 
 LEAGUE_TRANSLATE = {
@@ -65,9 +64,10 @@ LEAGUE_TRANSLATE = {
     "extraleague": "Экстралига",
     "premier league": "Премьер-лига",
     "laliga": "Ла Лига",
-    "champions league": "Лига Чемпионов",
-    "formula 1": "Формула-1"
+    "champions league": "Лига Чемпионов"
 }
+
+MSK_TZ = timezone(timedelta(hours=3))
 
 def translate_meta(text: str, dictionary: dict) -> str:
     cleaned = text.strip()
@@ -76,8 +76,6 @@ def translate_meta(text: str, dictionary: dict) -> str:
         if en_key in low:
             return ru_val
     return cleaned
-
-MSK_TZ = timezone(timedelta(hours=3))
 
 def format_timestamp_msk(ts_str: str) -> str:
     try:
@@ -109,11 +107,9 @@ def self_ping_worker():
         time.sleep(480)
 
 
+# --- ПАРСИНГ ФУТБОЛА И ХОККЕЯ (FLASHSCORE FEED) ---
+
 def parse_flashscore_feed(sport_id=1, day_offset=0):
-    """
-    sport_id: 1 - Футбол, 4 - Хоккей, 15 - Формула-1 / Автоспорт
-    day_offset: -1 (вчера), 0 (сегодня), 1 (завтра), 2 (послезавтра)
-    """
     feed_name = f"f_{sport_id}_{day_offset}_3_ru_1"
     url = f"https://46.flashscore.ninja/2/x/feed/{feed_name}"
 
@@ -180,32 +176,140 @@ def parse_flashscore_feed(sport_id=1, day_offset=0):
 
         return matches
     except Exception as e:
-        logger.error(f"Ошибка фида ({sport_id}, день {day_offset}): {e}")
+        logger.error(f"Ошибка фида ({sport_id}): {e}")
         return []
 
 
+# --- МОДУЛЬ ФОРМУЛЫ-1 (БЕЗОТКАЗНЫЙ API) ---
+
+def get_f1_events(day_mode: str) -> str:
+    """
+    Получает актуальные данные по Формуле-1:
+    - 'today' / 'yesterday': последний активный Гран-при (квалификация, спринт, гонка)
+    - 'tomorrow' / 'future': расписание ближайших этапов Гран-при
+    """
+    try:
+        now_utc = datetime.now(timezone.utc)
+        current_year = now_utc.year
+        
+        # Запрашиваем расписание сезона F1
+        url_schedule = f"https://api.jolpi.ca/ergast/f1/{current_year}.json"
+        res = requests.get(url_schedule, timeout=6)
+        if res.status_code != 200:
+            return f"{ICON_F1} Сервер F1 временно не ответил. Попробуйте через минуту."
+
+        races = res.json().get('MRData', {}).get('RaceTable', {}).get('Races', [])
+        if not races:
+            return f"{ICON_F1} Расписание Формулы-1 на текущий сезон не найдено."
+
+        # Поиск актуального этапа (ближайшего к текущей дате)
+        target_race = None
+        for r in races:
+            race_dt_str = f"{r['date']}T{r.get('time', '12:00:00Z').replace('Z', '')}+00:00"
+            race_dt = datetime.fromisoformat(race_dt_str)
+            # Если гонка в пределах недели от текущей даты
+            if abs((race_dt - now_utc).days) <= 5:
+                target_race = r
+                break
+
+        # Если прямо на этой неделе гонки нет, берем ближайшую предстоящую
+        if not target_race:
+            for r in races:
+                race_dt_str = f"{r['date']}T{r.get('time', '12:00:00Z').replace('Z', '')}+00:00"
+                race_dt = datetime.fromisoformat(race_dt_str)
+                if race_dt >= now_utc:
+                    target_race = r
+                    break
+
+        if not target_race:
+            target_race = races[-1]  # Последняя гонка сезона
+
+        race_name = target_race.get('raceName', 'Гран-при')
+        circuit_name = target_race.get('Circuit', {}).get('circuitName', '')
+        country = target_race.get('Circuit', {}).get('Location', {}).get('country', '')
+
+        # Время гонки по МСК
+        main_race_dt_str = f"{target_race['date']}T{target_race.get('time', '12:00:00Z').replace('Z', '')}+00:00"
+        main_race_msk = datetime.fromisoformat(main_race_dt_str).astimezone(MSK_TZ).strftime("%d.%m в %H:%M МСК")
+
+        # Если пользователь нажал "Вчера" или "Сегодня/LIVE" -> смотрим результаты или стартовую решетку
+        if day_mode in ["yesterday", "today"]:
+            round_num = target_race.get('round')
+            url_results = f"https://api.jolpi.ca/ergast/f1/{current_year}/{round_num}/results.json"
+            res_results = requests.get(url_results, timeout=6)
+            data_res = res_results.json().get('MRData', {}).get('RaceTable', {}).get('Races', [])
+
+            if data_res and data_res[0].get('Results'):
+                top_results = data_res[0]['Results'][:10]
+                lines = [
+                    f"{ICON_FLAG} <b>{race_name} ({country})</b> — <i>Результаты гонки:</i>\n",
+                    f"📍 Трасса: {circuit_name}\n"
+                ]
+                for p in top_results:
+                    pos = p.get('position')
+                    driver = f"{p['Driver']['givenName']} {p['Driver']['familyName']}"
+                    team = p['Constructor']['name']
+                    status = p.get('status', '')
+                    points = p.get('points', '0')
+                    lines.append(f"<b>{pos}.</b> {driver} ({team}) — <i>{points} очк.</i>")
+                return "\n".join(lines)
+            else:
+                # Гонка еще не завершена -> выводим стартовую решетку / расписание сессий уик-энда
+                lines = [
+                    f"{ICON_F1} <b>{race_name} ({country})</b>\n",
+                    f"📍 Трасса: <b>{circuit_name}</b>",
+                    f"🏁 Старт главной гонки: <b>{main_race_msk}</b>\n",
+                    "<b>Расписание заездов уик-энда (МСК):</b>"
+                ]
+                # Квалификация
+                if 'Qualifying' in target_race:
+                    q_dt = f"{target_race['Qualifying']['date']}T{target_race['Qualifying'].get('time', '12:00:00Z').replace('Z', '')}+00:00"
+                    q_msk = datetime.fromisoformat(q_dt).astimezone(MSK_TZ).strftime("%d.%m в %H:%M")
+                    lines.append(f"⏱ Квалификация: {q_msk} МСК")
+                # Спринт (если есть)
+                if 'Sprint' in target_race:
+                    s_dt = f"{target_race['Sprint']['date']}T{target_race['Sprint'].get('time', '12:00:00Z').replace('Z', '')}+00:00"
+                    s_msk = datetime.fromisoformat(s_dt).astimezone(MSK_TZ).strftime("%d.%m в %H:%M")
+                    lines.append(f"🏎 Спринт-гонка: {s_msk} МСК")
+
+                lines.append(f"\n{ICON_LIVE} <i>Сессия активна прямо сейчас или начнется по расписанию выше.</i>")
+                return "\n".join(lines)
+
+        else:
+            # "Завтра" или "Ближайшие (3 дня)" -> календарь предстоящих этапов
+            upcoming = [r for r in races if datetime.fromisoformat(f"{r['date']}T00:00:00+00:00") >= now_utc]
+            if not upcoming:
+                return f"{ICON_FLAG} В текущем сезоне больше нет запланированных этапов."
+
+            lines = [f"{ICON_CAL} <b>БЛИЖАЙШИЕ ЭТАПЫ ФОРМУЛЫ-1 (МСК):</b>\n"]
+            for r in upcoming[:4]:
+                r_msk = datetime.fromisoformat(f"{r['date']}T{r.get('time', '12:00:00Z').replace('Z', '')}+00:00").astimezone(MSK_TZ).strftime("%d.%m в %H:%M МСК")
+                lines.append(
+                    f"{ICON_FLAG} <b>{r['raceName']}</b> ({r['Circuit']['Location']['country']})\n"
+                    f"  └ 🏁 Гонка: <i>{r_msk}</i> | {r['Circuit']['circuitName']}\n"
+                )
+            return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"F1 fetch error: {e}")
+        return f"⚠️ Временная ошибка получения данных F1: {e}"
+
+
+# --- ОБЩИЙ СБОР МАТЧЕЙ ---
+
 def get_sport_matches(target_league: str, day_mode: str) -> str:
-    """
-    target_league:
-      Футбол: 'all_football', 'rpl', 'epl', 'laliga'
-      Хоккей: 'all_hockey', 'khl', 'nhl'
-      Формула-1: 'f1'
-    """
-    if target_league in ["all_hockey", "khl", "nhl"]:
-        sport_id = 4
-    elif target_league == "f1":
-        sport_id = 15
-    else:
-        sport_id = 1
+    # Если выбрана Формула-1 -> используем специализированный модуль F1
+    if target_league == "f1":
+        return get_f1_events(day_mode)
+
+    # Футбол (1) или Хоккей (4)
+    sport_id = 4 if target_league in ["all_hockey", "khl", "nhl"] else 1
 
     matches = []
     if day_mode == "yesterday":
         matches = parse_flashscore_feed(sport_id=sport_id, day_offset=-1)
     elif day_mode == "today":
         matches = parse_flashscore_feed(sport_id=sport_id, day_offset=0)
-        # Если сегодня фид F1 пуст из-за сдвига UTC суток, проверяем соседний диапазон
-        if not matches and target_league == "f1":
-            matches = parse_flashscore_feed(sport_id=sport_id, day_offset=-1) + parse_flashscore_feed(sport_id=sport_id, day_offset=1)
     elif day_mode == "tomorrow":
         matches = parse_flashscore_feed(sport_id=sport_id, day_offset=1)
     elif day_mode == "future":
@@ -240,28 +344,10 @@ def get_sport_matches(target_league: str, day_mode: str) -> str:
         elif target_league == "nhl":
             if "нхл" in league_low or "nhl" in league_low:
                 is_target = True
-        elif target_league == "f1":
-            f1_keywords = ["f1", "формул", "formula", "гран-при", "grand prix", "автоспорт", "сан-паулу", "интерлагос", "бразил"]
-            if any(k in league_low for k in f1_keywords) or any(k in country_low for k in f1_keywords):
-                is_target = True
 
         if not is_target:
             continue
 
-        # Отображение для Формулы-1
-        if target_league == "f1":
-            event_name = m['home'] or m['league']
-            status_text = m['status_text']
-            if m['status_code'] == "2":
-                lines.append(f"{ICON_LIVE} <b>{m['country']}: {m['league']}</b>\n   └ 🏎 {event_name} ({ICON_TIME} <i>{status_text}</i>)")
-            elif m['status_code'] == "3":
-                winner = f" | Победитель: {m['away']}" if m['away'] else ""
-                lines.append(f"{ICON_FLAG} <b>{m['country']}: {m['league']}</b>\n   └ {event_name}{winner} (<i>Завершен</i>)")
-            else:
-                lines.append(f"⏳ <b>{m['country']}: {m['league']}</b>\n   └ {event_name} | {ICON_TIME} <i>{m['time_str']}</i>")
-            continue
-
-        # Отображение для Футбола и Хоккея
         has_score = (m['score_home'] != "" and m['score_away'] != "")
         score = f"{m['score_home']}:{m['score_away']}" if has_score else "vs"
 
@@ -279,7 +365,7 @@ def get_sport_matches(target_league: str, day_mode: str) -> str:
             "tomorrow": "на завтра не запланированы",
             "future": "на ближайшие дни не найдены"
         }
-        return f"{ICON_CAL} События выбранного турнира {day_names.get(day_mode, 'не найдены')}."
+        return f"{ICON_CAL} Матчи выбранного турнира {day_names.get(day_mode, 'не найдены')}."
 
     league_headers = {
         "all_football": f"{ICON_BALL} <b>ФУТБОЛ</b>",
@@ -288,32 +374,31 @@ def get_sport_matches(target_league: str, day_mode: str) -> str:
         "laliga": f"{FLAG_ES} <b>ИСПАНСКАЯ ЛА ЛИГА</b>",
         "all_hockey": f"{ICON_PUCK} <b>ХОККЕЙ</b>",
         "khl": f"{FLAG_RU} <b>КХЛ (ХОККЕЙ)</b>",
-        "nhl": f"{FLAG_US} <b>НХЛ (ХОККЕЙ)</b>",
-        "f1": f"{ICON_F1} <b>ФОРМУЛА-1 (FORMULA 1)</b>"
+        "nhl": f"{FLAG_US} <b>НХЛ (ХОККЕЙ)</b>"
     }
 
     day_headers = {
         "yesterday": "Результаты за ВЧЕРА",
         "today": "СЕГОДНЯ / LIVE",
         "tomorrow": "Расписание на ЗАВТРА",
-        "future": "БЛИЖАЙШИЕ СОБЫТИЯ С ДАТОЙ И ВРЕМЕНЕМ"
+        "future": "БЛИЖАЙШИЕ МАТЧИ С ДАТОЙ И ВРЕМЕНЕМ"
     }
 
-    head = f"{league_headers.get(target_league, 'События')} — <i>{day_headers.get(day_mode, '')}</i>:\n\n"
+    head = f"{league_headers.get(target_league, 'Матчи')} — <i>{day_headers.get(day_mode, '')}</i>:\n\n"
     return head + "\n\n".join(lines[:20])
 
 
-# --- МЕНЮ И КЛАВИАТУРЫ ---
+# --- КЛАВИАТУРЫ И ХЕНДЛЕРЫ ---
 
 def make_tournaments_keyboard():
     kb = types.InlineKeyboardMarkup(row_width=2)
     btn_f1 = types.InlineKeyboardButton(f"{ICON_F1} Формула-1", callback_data="sel_f1")
     btn_rpl = types.InlineKeyboardButton(f"{FLAG_RU} РПЛ", callback_data="sel_rpl")
+    btn_khl = types.InlineKeyboardButton(f"{FLAG_RU} КХЛ", callback_data="sel_khl")
     btn_epl = types.InlineKeyboardButton(f"{FLAG_EN} АПЛ", callback_data="sel_epl")
+    btn_nhl = types.InlineKeyboardButton(f"{FLAG_US} НХЛ", callback_data="sel_nhl")
     btn_laliga = types.InlineKeyboardButton(f"{FLAG_ES} Ла Лига", callback_data="sel_laliga")
     btn_f_all = types.InlineKeyboardButton(f"{ICON_BALL} Все матчи (Футбол)", callback_data="sel_all_football")
-    btn_khl = types.InlineKeyboardButton(f"{FLAG_RU} КХЛ", callback_data="sel_khl")
-    btn_nhl = types.InlineKeyboardButton(f"{FLAG_US} НХЛ", callback_data="sel_nhl")
     btn_h_all = types.InlineKeyboardButton(f"{ICON_PUCK} Все матчи (Хоккей)", callback_data="sel_all_hockey")
 
     kb.add(btn_f1)
@@ -329,7 +414,7 @@ def make_day_keyboard(league_key: str):
     btn_yest = types.InlineKeyboardButton("⏪ Вчера", callback_data=f"res_{league_key}_yesterday")
     btn_today = types.InlineKeyboardButton(f"{ICON_LIVE} Сегодня / LIVE", callback_data=f"res_{league_key}_today")
     btn_tom = types.InlineKeyboardButton("⏩ Завтра", callback_data=f"res_{league_key}_tomorrow")
-    btn_fut = types.InlineKeyboardButton(f"{ICON_CAL} Ближайшие (3 дня)", callback_data=f"res_{league_key}_future")
+    btn_fut = types.InlineKeyboardButton(f"{ICON_CAL} Ближайшие", callback_data=f"res_{league_key}_future")
     btn_back = types.InlineKeyboardButton("⬅️ Выбрать другой турнир", callback_data="go_main_menu")
 
     kb.add(btn_yest, btn_today)
@@ -357,7 +442,7 @@ def handle_select_league(call):
     league_key = call.data.replace('sel_', '')
     bot.answer_callback_query(call.id)
     bot.edit_message_text(
-        f"{ICON_CAL} Выберите период для просмотра событий:",
+        f"{ICON_CAL} Выберите период для просмотра:",
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         reply_markup=make_day_keyboard(league_key)
@@ -382,7 +467,7 @@ def handle_show_results(call):
     league_key = "_".join(parts[1:-1])
     day_mode = parts[-1]
 
-    bot.answer_callback_query(call.id, "Загружаю данные с Flashscore...")
+    bot.answer_callback_query(call.id, "Загружаю данные...")
     text = get_sport_matches(league_key, day_mode)
 
     bot.send_message(
