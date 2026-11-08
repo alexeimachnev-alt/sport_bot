@@ -16,20 +16,22 @@ bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 
 server = Flask(__name__)
 
-# Иконки и флаги через chr(), чтобы GitHub не ругался на hidden characters
+# Иконки и флаги через chr(), чтобы GitHub не ругался на скрытые знаки
 FLAG_RU = chr(0x1F1F7) + chr(0x1F1FA)
 FLAG_EN = chr(0x1F3F4) + chr(0xE0067) + chr(0xE0062) + chr(0xE0065) + chr(0xE006E) + chr(0xE0067) + chr(0xE007F)
 FLAG_ES = chr(0x1F1EA) + chr(0x1F1F8)
 FLAG_US = chr(0x1F1FA) + chr(0x1F1F8)
 ICON_BALL = chr(0x26BD)
 ICON_PUCK = chr(0x1F3D2)
+ICON_F1   = chr(0x1F3CE)  # 🏎 Болид Формулы-1
 ICON_LIVE = chr(0x1F534)
 ICON_TIME = chr(0x23F1)
-ICON_CAL = chr(0x1F4C5)
+ICON_CAL  = chr(0x1F4C5)
+ICON_FLAG = chr(0x1F3C1)  # 🏁 Клетчатый флаг
 
 SEP_BLOCK = chr(126)  # ~
 SEP_FIELD = chr(172)  # ¬
-SEP_PAIR = chr(247)   # ÷
+SEP_PAIR  = chr(247)  # ÷
 
 FS_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -62,7 +64,8 @@ LEAGUE_TRANSLATE = {
     "extraleague": "Экстралига",
     "premier league": "Премьер-лига",
     "laliga": "Ла Лига",
-    "champions league": "Лига Чемпионов"
+    "champions league": "Лига Чемпионов",
+    "formula 1": "Формула-1"
 }
 
 def translate_meta(text: str, dictionary: dict) -> str:
@@ -73,11 +76,9 @@ def translate_meta(text: str, dictionary: dict) -> str:
             return ru_val
     return cleaned
 
-# МСК часовой пояс (UTC+3)
 MSK_TZ = timezone(timedelta(hours=3))
 
 def format_timestamp_msk(ts_str: str) -> str:
-    """Конвертирует Unix timestamp матча в формат: ДД.ММ в ЧЧ:ММ МСК"""
     try:
         ts = int(ts_str)
         dt = datetime.fromtimestamp(ts, tz=MSK_TZ)
@@ -88,7 +89,7 @@ def format_timestamp_msk(ts_str: str) -> str:
 
 @server.route('/')
 def home():
-    return "Flashscore Bot is running 24/7", 200
+    return "Flashscore Bot (Football + Hockey + F1) is running 24/7", 200
 
 @server.route('/health')
 def health():
@@ -109,7 +110,7 @@ def self_ping_worker():
 
 def parse_flashscore_feed(sport_id=1, day_offset=0):
     """
-    sport_id: 1 - Футбол, 4 - Хоккей
+    sport_id: 1 - Футбол, 4 - Хоккей, 25 - Формула-1 / Автоспорт
     day_offset: -1 (вчера), 0 (сегодня), 1 (завтра), 2 (послезавтра)
     """
     feed_name = f"f_{sport_id}_{day_offset}_3_ru_1"
@@ -154,7 +155,6 @@ def parse_flashscore_feed(sport_id=1, day_offset=0):
                 stage_text = data.get("AC", "")
                 match_time_raw = data.get("AD", "")
 
-                # Формируем читаемое время матча
                 start_time_formatted = format_timestamp_msk(match_time_raw) if match_time_raw else "Скоро"
 
                 status_desc = stage_text
@@ -185,12 +185,19 @@ def parse_flashscore_feed(sport_id=1, day_offset=0):
 
 def get_sport_matches(target_league: str, day_mode: str) -> str:
     """
-    target_league: 'all_football', 'rpl', 'epl', 'laliga', 'all_hockey', 'khl', 'nhl'
+    target_league:
+      Футбол: 'all_football', 'rpl', 'epl', 'laliga'
+      Хоккей: 'all_hockey', 'khl', 'nhl'
+      Автоспорт: 'f1'
     day_mode: 'yesterday' (-1), 'today' (0), 'tomorrow' (1), 'future' (1 + 2)
     """
-    sport_id = 4 if target_league in ["all_hockey", "khl", "nhl"] else 1
+    if target_league in ["all_hockey", "khl", "nhl"]:
+        sport_id = 4
+    elif target_league == "f1":
+        sport_id = 25
+    else:
+        sport_id = 1
 
-    # Загружаем матчи за выбранные дни
     matches = []
     if day_mode == "yesterday":
         matches = parse_flashscore_feed(sport_id=sport_id, day_offset=-1)
@@ -199,13 +206,12 @@ def get_sport_matches(target_league: str, day_mode: str) -> str:
     elif day_mode == "tomorrow":
         matches = parse_flashscore_feed(sport_id=sport_id, day_offset=1)
     elif day_mode == "future":
-        # Ближайшие дни: завтра + послезавтра
         m1 = parse_flashscore_feed(sport_id=sport_id, day_offset=1)
         m2 = parse_flashscore_feed(sport_id=sport_id, day_offset=2)
         matches = m1 + m2
 
     if not matches:
-        return f"{ICON_CAL} На выбранный период данных о матчах в сетке Flashscore пока нет."
+        return f"{ICON_CAL} На выбранный период данных в Flashscore пока нет."
 
     lines = []
 
@@ -213,7 +219,6 @@ def get_sport_matches(target_league: str, day_mode: str) -> str:
         country_low = m['country'].lower()
         league_low = m['league'].lower()
 
-        # Проверка лиги/турнира
         is_target = False
         if target_league in ["all_football", "all_hockey"]:
             is_target = True
@@ -232,22 +237,36 @@ def get_sport_matches(target_league: str, day_mode: str) -> str:
         elif target_league == "nhl":
             if "нхл" in league_low or "nhl" in league_low:
                 is_target = True
+        elif target_league == "f1":
+            # Фильтр Формулы-1
+            if any(k in league_low for k in ["formula 1", "формула-1", "f1", "гран-при", "grand prix"]) or \
+               any(k in country_low for k in ["formula 1", "формула-1"]):
+                is_target = True
 
         if not is_target:
             continue
 
+        # Специфический вывод для Формулы-1 (заезд / гонка / квалификация)
+        if target_league == "f1":
+            session_name = m['home'] or m['league']
+            if m['status_code'] == "2":
+                lines.append(f"{ICON_LIVE} <b>{m['league']}</b>\n   └ {session_name} ({ICON_TIME} <i>{m['status_text']}</i>)")
+            elif m['status_code'] == "3":
+                winner_info = f" — Победитель: {m['away']}" if m['away'] else ""
+                lines.append(f"{ICON_FLAG} <b>{m['league']}</b>\n   └ {session_name}{winner_info} (<i>Завершен</i>)")
+            else:
+                lines.append(f"⏳ <b>{m['league']}</b>\n   └ {session_name} | {ICON_TIME} <i>{m['time_str']}</i>")
+            continue
+
+        # Вывод футбола и хоккея
         has_score = (m['score_home'] != "" and m['score_away'] != "")
         score = f"{m['score_home']}:{m['score_away']}" if has_score else "vs"
 
-        # Форматирование в зависимости от статуса:
         if m['status_code'] == "2":
-            # Идет прямо сейчас (LIVE)
             lines.append(f"{ICON_LIVE} <b>{m['country']}: {m['league']}</b>\n   {m['home']} <b>{score}</b> {m['away']} ({ICON_TIME} <i>{m['status_text']}</i>)")
         elif m['status_code'] == "3":
-            # Завершен (вчера или сегодня)
             lines.append(f"✅ <b>{m['home']}</b> <b>{score}</b> <b>{m['away']}</b> ({m['country']}: {m['league']})")
         else:
-            # Будущий матч (завтра или позже) с датой и временем
             lines.append(f"⏳ <b>{m['home']}</b> — <b>{m['away']}</b>\n   └ {ICON_TIME} <i>{m['time_str']}</i> | {m['country']}: {m['league']}")
 
     if not lines:
@@ -257,7 +276,7 @@ def get_sport_matches(target_league: str, day_mode: str) -> str:
             "tomorrow": "на завтра не запланированы",
             "future": "на ближайшие дни не найдены"
         }
-        return f"{ICON_CAL} Матчи выбранного турнира {day_names.get(day_mode, 'не найдены')}."
+        return f"{ICON_CAL} События выбранного турнира {day_names.get(day_mode, 'не найдены')}."
 
     league_headers = {
         "all_football": f"{ICON_BALL} <b>ФУТБОЛ</b>",
@@ -266,33 +285,40 @@ def get_sport_matches(target_league: str, day_mode: str) -> str:
         "laliga": f"{FLAG_ES} <b>ИСПАНСКАЯ ЛА ЛИГА</b>",
         "all_hockey": f"{ICON_PUCK} <b>ХОККЕЙ</b>",
         "khl": f"{FLAG_RU} <b>КХЛ (ХОККЕЙ)</b>",
-        "nhl": f"{FLAG_US} <b>НХЛ (ХОККЕЙ)</b>"
+        "nhl": f"{FLAG_US} <b>НХЛ (ХОККЕЙ)</b>",
+        "f1": f"{ICON_F1} <b>ФОРМУЛА-1 (FORMULA 1)</b>"
     }
 
     day_headers = {
         "yesterday": "Результаты за ВЧЕРА",
         "today": "СЕГОДНЯ / LIVE",
         "tomorrow": "Расписание на ЗАВТРА",
-        "future": "БЛИЖАЙШИЕ МАТЧИ С ДАТОЙ И ВРЕМЕНЕМ"
+        "future": "БЛИЖАЙШИЕ ЗАЕЗДЫ / МАТЧИ С ДАТОЙ И ВРЕМЕНЕМ"
     }
 
-    head = f"{league_headers.get(target_league, 'Матчи')} — <i>{day_headers.get(day_mode, '')}</i>:\n\n"
+    head = f"{league_headers.get(target_league, 'События')} — <i>{day_headers.get(day_mode, '')}</i>:\n\n"
     return head + "\n\n".join(lines[:20])
 
 
-# --- МЕНЮ И КНОПКИ В TELEGRAM ---
+# --- МЕНЮ И КЛАВИАТУРЫ ---
 
 def make_tournaments_keyboard():
-    """Меню 1: Выбор лиги или общего спорта"""
     kb = types.InlineKeyboardMarkup(row_width=2)
+    # Формула-1 на отдельной заметной кнопке
+    btn_f1 = types.InlineKeyboardButton(f"{ICON_F1} Формула-1", callback_data="sel_f1")
+
+    # Футбол
     btn_rpl = types.InlineKeyboardButton(f"{FLAG_RU} РПЛ", callback_data="sel_rpl")
-    btn_khl = types.InlineKeyboardButton(f"{FLAG_RU} КХЛ (Хоккей)", callback_data="sel_khl")
     btn_epl = types.InlineKeyboardButton(f"{FLAG_EN} АПЛ", callback_data="sel_epl")
-    btn_nhl = types.InlineKeyboardButton(f"{FLAG_US} НХЛ (Хоккей)", callback_data="sel_nhl")
     btn_laliga = types.InlineKeyboardButton(f"{FLAG_ES} Ла Лига", callback_data="sel_laliga")
     btn_f_all = types.InlineKeyboardButton(f"{ICON_BALL} Все матчи (Футбол)", callback_data="sel_all_football")
+
+    # Хоккей
+    btn_khl = types.InlineKeyboardButton(f"{FLAG_RU} КХЛ", callback_data="sel_khl")
+    btn_nhl = types.InlineKeyboardButton(f"{FLAG_US} НХЛ", callback_data="sel_nhl")
     btn_h_all = types.InlineKeyboardButton(f"{ICON_PUCK} Все матчи (Хоккей)", callback_data="sel_all_hockey")
 
+    kb.add(btn_f1)
     kb.add(btn_rpl, btn_khl)
     kb.add(btn_epl, btn_nhl)
     kb.add(btn_laliga)
@@ -301,13 +327,12 @@ def make_tournaments_keyboard():
 
 
 def make_day_keyboard(league_key: str):
-    """Меню 2: Выбор периода (Вчера, Сегодня, Завтра, Будущие)"""
     kb = types.InlineKeyboardMarkup(row_width=2)
     btn_yest = types.InlineKeyboardButton("⏪ Вчера", callback_data=f"res_{league_key}_yesterday")
     btn_today = types.InlineKeyboardButton(f"{ICON_LIVE} Сегодня / LIVE", callback_data=f"res_{league_key}_today")
     btn_tom = types.InlineKeyboardButton("⏩ Завтра", callback_data=f"res_{league_key}_tomorrow")
     btn_fut = types.InlineKeyboardButton(f"{ICON_CAL} Ближайшие (3 дня)", callback_data=f"res_{league_key}_future")
-    btn_back = types.InlineKeyboardButton("⬅️ Выбрать другую лигу", callback_data="go_main_menu")
+    btn_back = types.InlineKeyboardButton("⬅️ Выбрать другой турнир", callback_data="go_main_menu")
 
     kb.add(btn_yest, btn_today)
     kb.add(btn_tom, btn_fut)
@@ -320,7 +345,7 @@ def start_cmd(message):
     try:
         bot.send_message(
             message.chat.id,
-            f"{ICON_BALL} {ICON_PUCK} <b>Flashscore Спорт-Центр (Футбол & Хоккей)</b>\n\n"
+            f"{ICON_BALL} {ICON_PUCK} {ICON_F1} <b>Flashscore Спорт-Центр</b>\n\n"
             "Выберите интересующий турнир:",
             parse_mode="HTML",
             reply_markup=make_tournaments_keyboard()
@@ -334,7 +359,7 @@ def handle_select_league(call):
     league_key = call.data.replace('sel_', '')
     bot.answer_callback_query(call.id)
     bot.edit_message_text(
-        f"{ICON_CAL} Выберите период для просмотра матчей:",
+        f"{ICON_CAL} Выберите период для просмотра событий:",
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         reply_markup=make_day_keyboard(league_key)
@@ -345,7 +370,7 @@ def handle_select_league(call):
 def handle_back_menu(call):
     bot.answer_callback_query(call.id)
     bot.edit_message_text(
-        f"{ICON_BALL} {ICON_PUCK} <b>Выберите интересующий турнир:</b>",
+        f"{ICON_BALL} {ICON_PUCK} {ICON_F1} <b>Выберите интересующий турнир:</b>",
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         parse_mode="HTML",
@@ -355,12 +380,11 @@ def handle_back_menu(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('res_'))
 def handle_show_results(call):
-    # Формат data: res_{league}_{day_mode}
     parts = call.data.split('_')
     league_key = "_".join(parts[1:-1])
     day_mode = parts[-1]
 
-    bot.answer_callback_query(call.id, "Загружаю матчи с Flashscore...")
+    bot.answer_callback_query(call.id, "Загружаю данные с Flashscore...")
     text = get_sport_matches(league_key, day_mode)
 
     bot.send_message(
@@ -392,7 +416,7 @@ def run_polling_loop():
         try:
             bot.infinity_polling(timeout=15, long_polling_timeout=15, skip_pending=True)
         except Exception as err:
-            logger.error(f"Сбой polling: {err}. Перезапуск через 5 сек...")
+            logger.error(f"Сбой polling: {err}. Перезапуск...")
             time.sleep(5)
 
 threading.Thread(target=run_polling_loop, daemon=True).start()
