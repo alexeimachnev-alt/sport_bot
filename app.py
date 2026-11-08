@@ -24,16 +24,14 @@ def health():
     return {"status": "ok"}, 200
 
 
-# --- БЕЗОПАСНЫЕ СИМВОЛЫ И ЭМОДЗИ (ЧИСТЫЙ ЮНИКОД БЕЗ ОШИБОК GITHUB) ---
-FLAG_RU = "\U0001F1F7\U0001F1FA"      # Флаг РФ
-FLAG_EN = "\U0001F3F4\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U0007F"  # Флаг Англии
-FLAG_ES = "\U0001F1EA\U0001F1F8"      # Флаг Испании
-ICON_BALL = "\u26bd"                   # Футбольный мяч
-ICON_LIVE = "\U0001F534"               # Красный кружок LIVE
-ICON_TIME = "\u23f1"                   # Секундомер
-ICON_CUP  = "\U0001F3C6"               # Кубок
+# --- КОРРЕКТНЫЙ И БЕЗОПАСНЫЙ ЮНИКОД ДЛЯ СИМВОЛОВ И ФЛАГОВ ---
+FLAG_RU = "\U0001F1F7\U0001F1FA"                                                        # 🇷🇺 РФ
+FLAG_EN = "\U0001F3F4\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F"      # 🏴󠁧󠁢󠁥󠁮󠁧󠁿 Англия
+FLAG_ES = "\U0001F1EA\U0001F1F8"                                                        # 🇪🇸 Испания
+ICON_BALL = "\u26bd"                                                                     # ⚽ Мяч
+ICON_LIVE = "\U0001F534"                                                                 # 🔴 LIVE
+ICON_TIME = "\u23f1"                                                                     # ⏱ Время
 
-# Разделители внутреннего фида Flashscore
 SEP_BLOCK = chr(126)  # ~
 SEP_FIELD = chr(172)  # ¬
 SEP_PAIR  = chr(247)  # ÷
@@ -111,7 +109,7 @@ def get_matches_by_mode(mode: str) -> str:
     for m in matches:
         country_low = m['country'].lower()
         league_low = m['league'].lower()
-        
+
         has_score = (m['score_home'] != "" and m['score_away'] != "")
         score = f"{m['score_home']}:{m['score_away']}" if has_score else "—"
 
@@ -157,8 +155,6 @@ def get_matches_by_mode(mode: str) -> str:
     return header_titles.get(mode, "") + "\n" + "\n\n".join(lines[:15])
 
 
-# --- КРАСИВОЕ МЕНЮ КНОПОК ---
-
 def make_keyboard():
     kb = types.InlineKeyboardMarkup(row_width=2)
     btn_live = types.InlineKeyboardButton(f"{ICON_LIVE} Текущий LIVE", callback_data="fs_live")
@@ -190,8 +186,6 @@ def callback_handler(call):
     text = get_matches_by_mode(mode)
     bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=make_keyboard())
 
-
-# --- БЕСКОНЕЧНЫЙ ЦИКЛ POLLING БЕЗ ВЫЛЕТОВ ---
 
 def run_polling():
     time.sleep(1)
