@@ -10,7 +10,7 @@ from telebot import types
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "ТВОЙ_ТЕЛЕГРАМ_ТОКЕН")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
 
 server = Flask(__name__)
@@ -31,52 +31,48 @@ FS_HEADERS = {
     "x-fsign": "SW9D1eZo"
 }
 
+# Безопасные ASCII-эквиваленты разделителей Flashscore:
+SEP_BLOCK = "\x7e"  # символ ~
+SEP_FIELD = "\xac"  # символ ¬
+SEP_PAIR = "\xf7"   # символ ÷
+
 def parse_flashscore_feed(feed_type="f_1_0_3_ru_1"):
-    """
-    Получает и разбирает официальный фид Flashscore (футбол).
-    feed_type f_1_0_3_ru_1 - футбольная лента на русском языке
-    """
     url = f"https://local-global.flashscore.ninja/2/x/feed/{feed_type}"
     try:
         res = requests.get(url, headers=FS_HEADERS, timeout=8)
         if res.status_code != 200:
             return []
-            
+
         raw_text = res.text
-        # Разделитель записей во Flashscore: ~
-        blocks = raw_text.split("~")
-        
+        blocks = raw_text.split(SEP_BLOCK)
+
         matches = []
         current_league = "Футбол"
         current_country = ""
-        
+
         for block in blocks:
             if not block.strip():
                 continue
-            
-            # Разделитель полей: ¬
-            items = block.split("¬")
+
+            items = block.split(SEP_FIELD)
             data = {}
             for item in items:
-                if "÷" in item:
-                    k, v = item.split("÷", 1)
+                if SEP_PAIR in item:
+                    k, v = item.split(SEP_PAIR, 1)
                     data[k] = v
 
-            # Блок смены турнира (ZA)
             if "ZA" in data:
                 current_league = data.get("ZA", "")
                 current_country = data.get("ZY", "")
 
-            # Блок матча (AA)
             if "AA" in data:
                 home_team = data.get("AE", "")
                 away_team = data.get("AF", "")
                 score_home = data.get("AG", "")
                 score_away = data.get("AH", "")
-                match_status = data.get("AB", "") # 1: не начался, 2: лайв, 3: завершен
-                stage_text = data.get("AC", "")   # Время / минута / статус (Перерыв, Матч завершен)
-                
-                # Читаемый статус
+                match_status = data.get("AB", "")
+                stage_text = data.get("AC", "")
+
                 status_desc = stage_text
                 if match_status == "3" and not status_desc:
                     status_desc = "Завершен"
@@ -96,7 +92,7 @@ def parse_flashscore_feed(feed_type="f_1_0_3_ru_1"):
 
         return matches
     except Exception as e:
-        logger.error(f"Ошибка получения фида Flashscore: {e}")
+        logger.error(f"Error fetching Flashscore: {e}")
         return []
 
 
@@ -112,23 +108,19 @@ def get_matches_by_mode(mode: str) -> str:
         league_low = m['league'].lower()
         score = f"{m['score_home']}:{m['score_away']}" if (m['score_home'] != "" and m['score_away'] != "") else "vs"
 
-        # 1. LIVE (все матчи, идущие прямо сейчас - статус 2)
         if mode == "live":
             if m['status_code'] == "2":
                 lines.append(f"🔴 <b>[{m['league']}]</b>\n  └ {m['home']} <b>{score}</b> {m['away']} (<i>{m['status_text']}</i>)")
 
-        # 2. РПЛ
         elif mode == "rpl":
             if "россия" in country_low or "russia" in country_low:
                 if "премьер" in league_low or "premier" in league_low:
                     lines.append(f"🇷🇺 <b>{m['home']}</b> {score} <b>{m['away']}</b> ({m['status_text']})")
 
-        # 3. АПЛ
         elif mode == "epl":
             if ("англия" in country_low or "england" in country_low) and "премьер" in league_low:
                 lines.append(f"🏴󠁧󠁢󠁥󠁮󠁧󠁿 <b>{m['home']}</b> {score} <b>{m['away']}</b> ({m['status_text']})")
 
-        # 4. Ла Лига
         elif mode == "laliga":
             if ("испания" in country_low or "spain" in country_low) and ("лалига" in league_low or "примера" in league_low):
                 lines.append(f"🇪🇸 <b>{m['home']}</b> {score} <b>{m['away']}</b> ({m['status_text']})")
@@ -145,7 +137,7 @@ def get_matches_by_mode(mode: str) -> str:
     return "\n\n".join(lines[:15])
 
 
-# --- ТЕЛЕГРАМ БОТ ---
+# --- КНОПКИ И ОБРАБОТЧИКИ TELEGRAM ---
 
 def make_keyboard():
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -153,7 +145,7 @@ def make_keyboard():
     btn_rpl = types.InlineKeyboardButton("🇷🇺 РПЛ", callback_data="fs_rpl")
     btn_epl = types.InlineKeyboardButton("🏴󠁧󠁢󠁥󠁮󠁧󠁿 АПЛ", callback_data="fs_epl")
     btn_laliga = types.InlineKeyboardButton("🇪🇸 Ла Лига", callback_data="fs_laliga")
-    
+
     kb.add(btn_live)
     kb.add(btn_rpl, btn_epl)
     kb.add(btn_laliga)
@@ -178,11 +170,11 @@ def callback_handler(call):
     bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=make_keyboard())
 
 
-# --- АНТИКРАШ POLLING В ФОНЕ ---
+# --- ЗАПУСК POLLING В ФОНЕ С ЗАЩИТОЙ ОТ ПАДЕНИЙ ---
 
 def run_polling():
     time.sleep(1)
-    logger.info("Запуск бота...")
+    logger.info("Starting Telegram Polling...")
     try:
         bot.remove_webhook()
     except Exception:
@@ -192,7 +184,7 @@ def run_polling():
         try:
             bot.infinity_polling(timeout=20, long_polling_timeout=20)
         except Exception as err:
-            logger.error(f"Сбой polling: {err}. Перезапуск...")
+            logger.error(f"Polling error: {err}. Restarting in 5s...")
             time.sleep(5)
 
 threading.Thread(target=run_polling, daemon=True).start()
