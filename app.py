@@ -24,17 +24,18 @@ def health():
     return {"status": "ok"}, 200
 
 
-# --- КОРРЕКТНЫЙ И БЕЗОПАСНЫЙ ЮНИКОД ДЛЯ СИМВОЛОВ И ФЛАГОВ ---
-FLAG_RU = "\U0001F1F7\U0001F1FA"                                                        # 🇷🇺 РФ
-FLAG_EN = "\U0001F3F4\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F"      # 🏴󠁧󠁢󠁥󠁮󠁧󠁿 Англия
-FLAG_ES = "\U0001F1EA\U0001F1F8"                                                        # 🇪🇸 Испания
-ICON_BALL = "\u26bd"                                                                     # ⚽ Мяч
-ICON_LIVE = "\U0001F534"                                                                 # 🔴 LIVE
-ICON_TIME = "\u23f1"                                                                     # ⏱ Время
+# Иконки и флаги собираются через номера символов: ни одного скрытого знака в коде!
+FLAG_RU = chr(0x1F1F7) + chr(0x1F1FA)
+FLAG_EN = chr(0x1F3F4) + chr(0xE0067) + chr(0xE0062) + chr(0xE0065) + chr(0xE006E) + chr(0xE0067) + chr(0xE007F)
+FLAG_ES = chr(0x1F1EA) + chr(0x1F1F8)
+ICON_BALL = chr(0x26BD)
+ICON_LIVE = chr(0x1F534)
+ICON_TIME = chr(0x23F1)
 
-SEP_BLOCK = chr(126)  # ~
-SEP_FIELD = chr(172)  # ¬
-SEP_PAIR  = chr(247)  # ÷
+# Разделители внутреннего фида Flashscore
+SEP_BLOCK = chr(126)
+SEP_FIELD = chr(172)
+SEP_PAIR = chr(247)
 
 FS_HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
@@ -42,7 +43,7 @@ FS_HEADERS = {
 }
 
 def parse_flashscore_feed(feed_type="f_1_0_3_ru_1"):
-    url = f"https://local-global.flashscore.ninja/2/x/feed/{feed_type}"
+    url = "https://local-global.flashscore.ninja/2/x/feed/" + feed_type
     try:
         res = requests.get(url, headers=FS_HEADERS, timeout=8)
         if res.status_code != 200:
@@ -102,7 +103,7 @@ def parse_flashscore_feed(feed_type="f_1_0_3_ru_1"):
 def get_matches_by_mode(mode: str) -> str:
     matches = parse_flashscore_feed()
     if not matches:
-        return f"{ICON_BALL} Временная ошибка связи с Flashscore или сегодня нет матчей."
+        return ICON_BALL + " Временная ошибка связи с Flashscore или сегодня нет матчей."
 
     lines = []
 
@@ -111,7 +112,7 @@ def get_matches_by_mode(mode: str) -> str:
         league_low = m['league'].lower()
 
         has_score = (m['score_home'] != "" and m['score_away'] != "")
-        score = f"{m['score_home']}:{m['score_away']}" if has_score else "—"
+        score = f"{m['score_home']}:{m['score_away']}" if has_score else "-"
 
         # 1. LIVE
         if mode == "live":
